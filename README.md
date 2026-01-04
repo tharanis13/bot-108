@@ -101,9 +101,5 @@ https://<ngrok-url>/webhook
 
 ---
 
-## Sample Bot Flow
-
-```
-
 
 Tharani S
