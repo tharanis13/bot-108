@@ -11,65 +11,127 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// MAIN WEBHOOK
+const MessagingResponse = twilio.twiml.MessagingResponse;
+
+// In-memory session store
+const sessions = {};
+
+// Emergency options
+const EMERGENCY_TYPES = {
+  "1": { name: "Medical Emergency", code: "MEDICAL" },
+  "2": { name: "Fire Emergency", code: "FIRE" },
+  "3": { name: "Crime or Safety Emergency", code: "CRIME" }
+};
+
+// Helpers
+const generateEmergencyId = () =>
+  "EMG-" + Math.floor(100000 + Math.random() * 900000);
+
+const getInstructions = (code) => ({
+  MEDICAL: "Stay calm and keep the patient stable.",
+  FIRE: "Evacuate immediately and move to a safe area.",
+  CRIME: "Go to a secure place and avoid confrontation."
+}[code] || "");
+
+// Webhook
 app.post("/webhook", async (req, res) => {
   const from = req.body.From;
-  const message = req.body.Body?.trim().toLowerCase();
-  const latitude = req.body.Latitude;
-  const longitude = req.body.Longitude;
+  const text = req.body.Body?.trim().toUpperCase();
+  const { Latitude, Longitude } = req.body;
 
+  if (!sessions[from]) sessions[from] = { stage: "START" };
+  const session = sessions[from];
   let reply = "";
 
-  // STEP 1: HELP
-  if (message === "help") {
-    reply =
-      "🚨 Emergency Assistance Service\n\n" +
-      "Reply with:\n" +
-      "1️⃣ Medical Emergency\n" +
-      "2️⃣ Police Emergency\n" +
-      "3️⃣ Fire Emergency";
+  try {
+    if (session.stage === "START") {
+      reply =
+`Emergency Assistance System
+
+Reply with:
+1. Medical
+2. Fire
+3. Crime or Safety`;
+      session.stage = "TYPE";
+    }
+
+    else if (session.stage === "TYPE") {
+      if (!EMERGENCY_TYPES[text]) {
+        reply = "Please reply with 1, 2, or 3.";
+      } else {
+        session.type = EMERGENCY_TYPES[text];
+        session.id = generateEmergencyId();
+        session.time = new Date();
+        session.stage = "LOCATION";
+
+        reply =
+`You selected ${session.type.name}.
+
+Share your live location
+or
+Type your address.`;
+      }
+    }
+
+    else if (session.stage === "LOCATION") {
+      session.location = Latitude && Longitude
+        ? `${Latitude}, ${Longitude}`
+        : req.body.Body;
+
+      session.stage = "ACTIVE";
+
+      reply =
+`Emergency registered successfully.
+
+ID: ${session.id}
+Type: ${session.type.name}
+ETA: About 10 minutes
+
+${getInstructions(session.type.code)}
+
+Commands:
+STATUS – Check progress
+CANCEL – Cancel request`;
+    }
+
+    else if (session.stage === "ACTIVE") {
+      if (text === "STATUS") {
+        reply =
+`Status update:
+
+ID: ${session.id}
+Type: ${session.type.name}
+Reported: ${session.time.toLocaleString()}
+Status: Help is on the way.`;
+      }
+      else if (text === "CANCEL") {
+        reply =
+`Your emergency request has been cancelled.
+
+ID: ${session.id}`;
+        delete sessions[from];
+      }
+      else {
+        reply = "Reply STATUS or CANCEL.";
+      }
+    }
+
+    await client.messages.create({
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to: from,
+      body: reply
+    });
+
+    const twiml = new MessagingResponse();
+    res.type("text/xml").send(twiml.toString());
+
+  } catch (err) {
+    console.error(err);
+    res.type("text/xml").send(new MessagingResponse().toString());
   }
-
-  // STEP 2: MEDICAL EMERGENCY
-  else if (message === "1") {
-    reply = "Please share your live location 📍";
-  }
-
-  // STEP 3: LOCATION RECEIVED
-  else if (latitude && longitude) {
-    reply =
-      "✅ Location received.\n\n" +
-      "Your emergency request has been forwarded to our response team.\n" +
-      "Please stay calm.";
-
-    // OPTIONAL: log location (for company team)
-    console.log("EMERGENCY LOCATION:");
-    console.log("From:", from);
-    console.log("Latitude:", latitude);
-    console.log("Longitude:", longitude);
-  }
-
-  // STEP 4: THANKS
-  else if (message === "thanks") {
-    reply = "You're welcome 🙏 Our team will contact you shortly.";
-  }
-
-  // DEFAULT
-  else {
-    reply = "Please type *help* to start an emergency request.";
-  }
-
-  // SEND WHATSAPP MESSAGE
-  await client.messages.create({
-    from: process.env.TWILIO_WHATSAPP_NUMBER,
-    to: from,
-    body: reply,
-  });
-
-  res.sendStatus(200);
 });
 
-// START SERVER
-app.listen(3000, () => {
-  console.log("🚑 bot_108 running on port 3000");
-});
+// Server
+app.listen(3000, () =>
+  console.log("Emergency WhatsApp Bot is running on port 3000")
+);
